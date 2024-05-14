@@ -1,6 +1,7 @@
 import pandas as pd
 from azure.core.credentials import AzureKeyCredential
 from azure.search.documents import SearchClient
+from azure.search.documents.models import QueryType
 import os, dotenv, json
 from openai import AzureOpenAI
 import signal
@@ -13,6 +14,9 @@ openai_api_version = os.getenv("AZURE_OPENAI_API_VERSION")
 openai_gpt4_api_base = os.getenv("AZURE_OPENAI_GPT4_API_BASE")
 openai_gpt4_api_key = os.getenv("AZURE_OPENAI_GPT4_API_KEY")
 openai_gpt4_deployment_name = os.getenv("AZURE_OPENAI_GPT4_DEPLOYMENT_NAME")
+
+# Azure AI Search Semantic Configuration
+semantic_configuration_name = os.getenv("AZURE_AI_SEARCH_SEMANTIC_CONFIGURATION")
 
 def get_search_client() -> SearchClient:
     """
@@ -33,7 +37,7 @@ def search_documents(current_ground_truth: str):
     search_client = get_search_client()
     
     # Perform the search, specifying the top parameter to limit results
-    results = search_client.search(search_text=current_ground_truth, top=10)
+    results = search_client.search(search_text=current_ground_truth, top=10, query_type=QueryType.SEMANTIC, semantic_configuration_name=semantic_configuration_name)
 
     # Dictionary to hold the search results with an identifier
     search_results = {}
@@ -66,6 +70,8 @@ evaluator_client = AzureOpenAI(
 def evaluate_response(current_ground_truth, ground_truth_sources):
     system_prompt = f"""You are a Ground Truth Evaluator, tasked with ensuring that information remains accurate and up-to-date. Given that ground truth can evolve over time, your role involves revising the existing ground truth to align with the latest validated information. Below is the current ground truth followed by a list of potential updates. Please review and select the most accurate and recent update from the list provided.
 
+**Example Caution:** Be vigilant and avoid confusion between similar sounding product names like "Produk Simpanan Deposito Valas" and "Produk Simpanan Deposito Rupiah" which, despite their similarity, refer to different products.
+    
 **Current Ground Truth:**
 {current_ground_truth}
 
@@ -87,7 +93,7 @@ Please respond in JSON format, specifying the number of the selected ground trut
         messages=messages,
         temperature=0,
         top_p=1,
-        max_tokens=1000,
+        max_tokens=100,
         seed=42,
     )
 
@@ -100,7 +106,9 @@ Please respond in JSON format, specifying the number of the selected ground trut
 def judge_response(current_ground_truth, ground_truth_sources, revised_ground_truth):
     system_prompt = f"""As a Ground Truth Reviewer, your expertise lies in meticulously ensuring that updates to information align accurately with the most recent and relevant sources. Given that ground truth can change over time, you are provided with the original ground truth, a revised version proposed by your team, and a list of the latest ground truth sources. Your task is to assess whether the revised ground truth aligns appropriately with the best and most current information available. If you find another source from the list that more accurately reflects the needed updates than the revised version your team proposed, you should determine the revision as inadequate.
 
-**Example Caution:** Be vigilant and avoid confusion between similar sounding product names like "Produk Simpanan Deposito Valas" and "Produk Simpanan Deposito Rupiah" which, despite their similarity, refer to different products "Rupiah" and "Valas".
+**Example Caution 1:** Be vigilant and avoid confusion between similar sounding product names like "Produk Simpanan Deposito Valas" and "Produk Simpanan Deposito Rupiah" which, despite their similarity, refer to different products.
+
+**Example Caution 2:** Carefully distinguish between "Produk Simpanan Deposito BRImo" and "Produk Simpanan Deposito Rupiah," as these are distinct products with potentially different features and terms.
 
 **Initial Ground Truth:**
 {current_ground_truth}
@@ -125,7 +133,7 @@ Assess the suitability of the revised ground truth and respond in JSON format, i
         messages=messages,
         temperature=0,
         top_p=1,
-        max_tokens=1000,
+        max_tokens=100,
         seed=42,
     )
 
@@ -152,6 +160,14 @@ def update_csv_based_on_judgements(csv_path, output_csv_path):
         # Iterate over each row in DataFrame
         for index, row in data.iterrows():
             current_ground_truth = row['ground_truth']
+
+            # Check for double newlines in the ground truth
+            if '\n\n' in current_ground_truth:
+                print(f"Row {index + 1} contains double newlines, setting to null.")
+                data.at[index, 'source_by_llm'] = None
+                data.at[index, 'reground_truth_by_llm'] = None
+                continue  # Skip to the next row
+
             results = search_documents(current_ground_truth=current_ground_truth)
 
             evaluation_count = 0
@@ -211,6 +227,6 @@ def update_csv_based_on_judgements(csv_path, output_csv_path):
 # Example usage
 if __name__ == "__main__":
     dotenv.load_dotenv()
-    original_csv_path = "./test100.csv"
-    output_csv_path = "./test100_output.csv"
+    original_csv_path = "./test1800.csv"
+    output_csv_path = "./test1800_output.csv"
     update_csv_based_on_judgements(original_csv_path, output_csv_path)

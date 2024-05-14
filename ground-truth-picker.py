@@ -1,5 +1,6 @@
 from azure.core.credentials import AzureKeyCredential
 from azure.search.documents import SearchClient
+from azure.search.documents.models import QueryType
 import os, dotenv, json
 from openai import AzureOpenAI
 
@@ -10,6 +11,9 @@ openai_api_version = os.getenv("AZURE_OPENAI_API_VERSION")
 openai_gpt4_api_base = os.getenv("AZURE_OPENAI_GPT4_API_BASE")
 openai_gpt4_api_key = os.getenv("AZURE_OPENAI_GPT4_API_KEY")
 openai_gpt4_deployment_name = os.getenv("AZURE_OPENAI_GPT4_DEPLOYMENT_NAME")
+
+# Azure AI Search Semantic Configuration
+semantic_configuration_name = os.getenv("AZURE_AI_SEARCH_SEMANTIC_CONFIGURATION")
 
 def get_search_client() -> SearchClient:
     """
@@ -25,12 +29,12 @@ def get_search_client() -> SearchClient:
     credential = AzureKeyCredential(api_key)
     return SearchClient(endpoint=endpoint, index_name=index_name, credential=credential)
 
-def search_documents(user_query: str):
+def search_documents(current_ground_truth: str):
     # Get the Azure SearchClient instance
     search_client = get_search_client()
     
     # Perform the search, specifying the top parameter to limit results
-    results = search_client.search(search_text=user_query, top=10)
+    results = search_client.search(search_text=current_ground_truth, top=20, query_type=QueryType.SEMANTIC, semantic_configuration_name=semantic_configuration_name)
 
     # Dictionary to hold the search results with an identifier
     search_results = {}
@@ -63,6 +67,8 @@ evaluator_client = AzureOpenAI(
 def evaluate_response(current_ground_truth, ground_truth_sources):
     system_prompt = f"""You are a Ground Truth Evaluator, tasked with ensuring that information remains accurate and up-to-date. Given that ground truth can evolve over time, your role involves revising the existing ground truth to align with the latest validated information. Below is the current ground truth followed by a list of potential updates. Please review and select the most accurate and recent update from the list provided.
 
+**Example Caution:** Be vigilant and avoid confusion between similar sounding product names like "Produk Simpanan Deposito Valas" and "Produk Simpanan Deposito Rupiah" which, despite their similarity, refer to different products.
+
 **Current Ground Truth:**
 {current_ground_truth}
 
@@ -84,7 +90,7 @@ Please respond in JSON format, specifying the number of the selected ground trut
         messages=messages,
         temperature=0,
         top_p=1,
-        max_tokens=1000,
+        max_tokens=100,
         seed=42,
     )
 
@@ -97,7 +103,9 @@ Please respond in JSON format, specifying the number of the selected ground trut
 def judge_response(current_ground_truth, ground_truth_sources, revised_ground_truth):
     system_prompt = f"""As a Ground Truth Reviewer, your expertise lies in meticulously ensuring that updates to information align accurately with the most recent and relevant sources. Given that ground truth can change over time, you are provided with the original ground truth, a revised version proposed by your team, and a list of the latest ground truth sources. Your task is to assess whether the revised ground truth aligns appropriately with the best and most current information available. If you find another source from the list that more accurately reflects the needed updates than the revised version your team proposed, you should determine the revision as inadequate.
 
-**Example Caution:** Be vigilant and avoid confusion between similar sounding product names like "Produk Simpanan Deposito Valas" and "Produk Simpanan Deposito Rupiah" which, despite their similarity, refer to different products "Rupiah" and "Valas".
+**Example Caution 1:** Be vigilant and avoid confusion between similar sounding product names like "Produk Simpanan Deposito Valas" and "Produk Simpanan Deposito Rupiah" which, despite their similarity, refer to different products.
+
+**Example Caution 2:** Carefully distinguish between "Produk Simpanan Deposito BRImo" and "Produk Simpanan Deposito Rupiah," as these are distinct products with potentially different features and terms.
 
 **Initial Ground Truth:**
 {current_ground_truth}
@@ -122,7 +130,7 @@ Assess the suitability of the revised ground truth and respond in JSON format, i
         messages=messages,
         temperature=0,
         top_p=1,
-        max_tokens=1000,
+        max_tokens=100,
         seed=42,
     )
 
@@ -136,16 +144,16 @@ Assess the suitability of the revised ground truth and respond in JSON format, i
 if __name__ == "__main__":
     dotenv.load_dotenv()
 
-    user_query = """Limit transaksi Produk Simpanan Britama di mesin ATM: Kartu Debit Silver: Limit transfer sesama BRI: Rp50.000.000,- ; Limit transfer antar bank: Rp10.000.000,- ;Limit tarik tunai: Rp10.000.000,-; Limit berbelanja di EDC merchant: Rp50.000.000,-;Kartu Debit Black: Limit transfer sesama BRI: Rp100.000.000,-; Limit transfer antar bank: Rp15.000.000,-; Limit tarik tunai: Rp10.000.000,- ;Limit berbelanja di edc merchant: Rp100.000.000,-;"""
-    results = search_documents(user_query=user_query)
+    current_ground_truth = """Deskripsi Produk Pinjaman Kredit Agunan Kas: Kredit Agunan Kas adalah pinjaman yang seluruh agunannya berupa giro, deposito, atau setara kas lainnya"""
+    results = search_documents(current_ground_truth=current_ground_truth)
 
     evaluation_count = 0  # Initialize the counter for evaluations
 
-    while evaluation_count < 3 and results:
+    while evaluation_count < 2 and results:
         evaluation_count += 1  # Increment evaluation counter at each loop
 
         # Evaluate the response and get the selected source number
-        evaluator_output = evaluate_response(user_query, results)
+        evaluator_output = evaluate_response(current_ground_truth, results)
         selected_source_number = evaluator_output.get('selected_source_number', None)
 
         # Check if the selected source number still exists in results
@@ -164,7 +172,7 @@ if __name__ == "__main__":
         print(f"Metadata Storage Name: {selected_result['metadata_storage_name']}")
 
         # Check if the selected result passes the ground truth check
-        judge_output = judge_response(user_query, results, selected_result['content'])
+        judge_output = judge_response(current_ground_truth, results, selected_result['content'])
         print(judge_output)  # Debug print to check the actual output
         pass_value = judge_output['pass']
         print(f"Pass value type: {type(pass_value)}, value: {pass_value}")  # Debugging the type and value
